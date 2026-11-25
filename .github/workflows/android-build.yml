@@ -52,6 +52,36 @@ jobs:
           text = p.read_text()
           text = text.replace("compose-bom:2026.09.00", "compose-bom:2025.08.00")
           p.write_text(text)
+
+          incall = Path("app/src/main/java/com/glassdialer/ui/InCallScreen.kt")
+          code = incall.read_text()
+          code = code.replace(
+              "AnimatedVisibility(\n                !keypad,",
+              "OverlayVisibility(\n                !keypad,"
+          )
+          code = code.replace(
+              "AnimatedVisibility(\n                keypad,",
+              "OverlayVisibility(\n                keypad,"
+          )
+          if "private fun OverlayVisibility(" not in code:
+              code += '''
+
+          @Composable
+          private fun OverlayVisibility(
+              visible: Boolean,
+              enter: EnterTransition,
+              exit: ExitTransition,
+              content: @Composable AnimatedVisibilityScope.() -> Unit,
+          ) {
+              androidx.compose.animation.AnimatedVisibility(
+                  visible = visible,
+                  enter = enter,
+                  exit = exit,
+                  content = content,
+              )
+          }
+          '''
+          incall.write_text(code)
           PY
 
       - name: Generate Gradle wrapper
