@@ -29,16 +29,46 @@ jobs:
           gradle-version: '8.13'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install Android platform and build tools
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Expand Android Studio project files
+      - name: Expand and prepare Android Studio project
         run: |
           unzip -q GlassDialer-project.zip -d /tmp/glass-dialer
           cp -a /tmp/glass-dialer/Glass-Dialer/. .
           rm GlassDialer-project.zip
+          python3 - <<'PY'
+          from pathlib import Path
+
+          gradle_file = Path("app/build.gradle.kts")
+          source = gradle_file.read_text()
+          old = """    kotlin {
+                  compilerOptions {
+                      jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+                  }
+              }
+          }
+
+          dependencies {"""
+          new = """}
+
+          kotlin {
+              compilerOptions {
+                  jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+              }
+          }
+
+          dependencies {"""
+          if old not in source:
+              raise SystemExit("Could not locate Kotlin compilerOptions block in app/build.gradle.kts")
+          gradle_file.write_text(source.replace(old, new, 1))
+
+          workflow_file = Path(".github/workflows/android-build.yml")
+          workflow_text = workflow_file.read_text()
+          workflow_file.write_text(workflow_text.replace("android-actions/setup-android@v3", "android-actions/setup-android@v4"))
+          PY
           gradle wrapper --gradle-version 8.13
 
       - name: Commit expanded project and Gradle wrapper
