@@ -20,6 +20,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * Call recording for Glass Dialer.
+ *
+ * Normal third-party apps cannot obtain CAPTURE_AUDIO_OUTPUT. On those devices
+ * this recorder uses the microphone input only; it does not bypass Android,
+ * carrier, dialer, or OEM recording announcements/restrictions.
+ */
 object CallRecorder {
     enum class Mode { CALL_AUDIO, MICROPHONE }
 
@@ -37,7 +44,7 @@ object CallRecorder {
     fun dir(ctx: Context): File =
         File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "Recordings").apply { mkdirs() }
 
-    /** True only when the app is installed as a privileged system app. */
+    /** True only if the OS/vendor has granted this privileged permission. */
     fun canRecordCallAudio(ctx: Context): Boolean =
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAPTURE_AUDIO_OUTPUT) ==
             PackageManager.PERMISSION_GRANTED
@@ -57,7 +64,7 @@ object CallRecorder {
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            Toast.makeText(ctx, "Allow the microphone permission to record calls", Toast.LENGTH_SHORT).show()
+            Toast.makeText(ctx, "Allow microphone permission before recording", Toast.LENGTH_LONG).show()
             return
         }
         runCatching {
@@ -66,7 +73,7 @@ object CallRecorder {
                 Intent(ctx, RecordService::class.java).putExtra(RecordService.EXTRA_NUMBER, number),
             )
         }.onFailure {
-            Toast.makeText(ctx, "Unable to start call recording", Toast.LENGTH_SHORT).show()
+            Toast.makeText(ctx, "Unable to start recording: ${it.localizedMessage ?: "service error"}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -82,58 +89,69 @@ object CallRecorder {
 
     internal fun begin(ctx: Context, number: String): Boolean {
         if (recorder != null) return true
+
         val safeNumber = number.filter { it.isDigit() || it == '+' }.ifEmpty { "unknown" }
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val file = File(dir(ctx), "${safeNumber}_${stamp}.m4a")
 
-        val sources = buildList {
-            if (canRecordCallAudio(ctx)) {
-                add(MediaRecorder.AudioSource.VOICE_CALL to Mode.CALL_AUDIO)
-            }
-            add(MediaRecorder.AudioSource.MIC to Mode.MICROPHONE)
-            add(MediaRecorder.AudioSource.VOICE_RECOGNITION to Mode.MICROPHONE)
+        // VOICE_CALL requires privileged CAPTURE_AUDIO_OUTPUT on Android.
+        // Do not try hidden/unsupported sources to evade this restriction.
+        val source = if (canRecordCallAudio(ctx)) {
+            MediaRecorder.AudioSource.VOICE_CALL to Mode.CALL_AUDIO
+        } else {
+            MediaRecorder.AudioSource.MIC to Mode.MICROPHONE
         }
 
-        for ((source, mode) in sources) {
-            val mediaRecorder = newRecorder(ctx)
-            try {
-                mediaRecorder.setAudioSource(source)
-                mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                mediaRecorder.setAudioSamplingRate(44100)
-                mediaRecorder.setAudioEncodingBitRate(96000)
-                mediaRecorder.setOutputFile(file.absolutePath)
-                mediaRecorder.prepare()
-                mediaRecorder.start()
-                recorder = mediaRecorder
+        val mediaRecorder = newRecorder(ctx)
+        try {
+            mediaRecorder.setAudioSource(source.first)
+            mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            mediaRecorder.setAudioSamplingRate(44100)
+            mediaRecorder.setAudioEncodingBitRate(96000)
+            mediaRecorder.setOutputFile(file.absolutePath)
+            mediaRecorder.prepare()
+            mediaRecorder.start()
+            recorder = mediaRecorder
 
-                // With microphone-only capture, speakerphone may let the mic pick up the remote voice.
-                if (mode == Mode.MICROPHONE) {
-                    speakerWasAlreadyOn =
-                        CallManager.audio.value?.route == android.telecom.CallAudioState.ROUTE_SPEAKER
-                    CallManager.speaker(true)
-                }
-                status.value = Status(true, System.currentTimeMillis(), mode, file)
-                return true
-            } catch (_: Exception) {
-                runCatching { mediaRecorder.reset() }
-                mediaRecorder.release()
-                file.delete()
+            if (source.second == Mode.MICROPHONE) {
+                speakerWasAlreadyOn =
+                    CallManager.audio.value?.route == android.telecom.CallAudioState.ROUTE_SPEAKER
+                if (!speakerWasAlreadyOn) CallManager.speaker(true)
             }
+            status.value = Status(true, System.currentTimeMillis(), source.second, file)
+            return true
+        } catch (error: Exception) {
+            runCatching { mediaRecorder.reset() }
+            runCatching { mediaRecorder.release() }
+            file.delete()
+            speakerWasAlreadyOn = false
+            status.value = Status()
+            return false
         }
-        return false
     }
 
     internal fun end() {
-        val activeRecorder = recorder ?: return
+        val activeRecorder = recorder ?: run {
+            status.value.file?.delete()
+            status.value = Status()
+            return
+        }
         val current = status.value
-        runCatching { activeRecorder.stop() }.onFailure { current.file?.delete() }
+        val stopped = runCatching { activeRecorder.stop() }.isSuccess
+        runCatching { activeRecorder.reset() }
         runCatching { activeRecorder.release() }
         recorder = null
+
         if (current.mode == Mode.MICROPHONE && !speakerWasAlreadyOn) {
             runCatching { CallManager.speaker(false) }
         }
         speakerWasAlreadyOn = false
+
+        // MediaRecorder can create a zero-byte/unplayable file if stopped too early.
+        current.file?.let { file ->
+            if (!stopped || !file.exists() || file.length() <= 0L) file.delete()
+        }
         status.value = Status()
     }
 }
@@ -150,12 +168,15 @@ class RecordService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Call recording", NotificationManager.IMPORTANCE_LOW),
+            NotificationChannel(CHANNEL, "Call recording", NotificationManager.IMPORTANCE_LOW)
+                .apply { description = "Shows while Glass Dialer is recording audio" },
         )
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle("Recording call")
+            .setContentText("Recording is active")
             .setOngoing(true)
+            .setCategory(Notification.CATEGORY_SERVICE)
             .build()
 
         startForeground(
@@ -166,7 +187,11 @@ class RecordService : Service() {
 
         val number = intent?.getStringExtra(EXTRA_NUMBER).orEmpty()
         if (!CallRecorder.begin(this, number)) {
-            Toast.makeText(this, "This phone blocked call recording", Toast.LENGTH_LONG).show()
+            Toast.makeText(
+                this,
+                "Recording unavailable. Android or this device blocked microphone capture.",
+                Toast.LENGTH_LONG,
+            ).show()
             stopSelf()
         }
         return START_NOT_STICKY
@@ -174,6 +199,7 @@ class RecordService : Service() {
 
     override fun onDestroy() {
         CallRecorder.end()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 }
