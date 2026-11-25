@@ -44,6 +44,16 @@ jobs:
           cp app/src/main/res/drawable/ic_launcher.xml app/src/main/res/mipmap-anydpi/ic_launcher_round.xml
           rm -rf archive-parts GlassDialer-project.zip
 
+      - name: Align Compose dependencies with the Android toolchain
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/build.gradle.kts")
+          text = p.read_text()
+          text = text.replace("compose-bom:2026.09.00", "compose-bom:2025.08.00")
+          p.write_text(text)
+          PY
+
       - name: Generate Gradle wrapper
         run: gradle wrapper --gradle-version 8.13
 
