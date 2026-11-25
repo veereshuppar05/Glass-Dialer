@@ -39,12 +39,16 @@ jobs:
           cat archive-parts/part-*.b64 | tr -d '\r\n' | base64 --decode > /tmp/glass-dialer/source.gz
           gzip -dc /tmp/glass-dialer/source.gz | gzip -dc | tar -xf - -C /tmp/glass-dialer
           cp -a /tmp/glass-dialer/Glass-Dialer/. .
+          mkdir -p app/src/main/res/mipmap-anydpi
+          cp app/src/main/res/drawable/ic_launcher.xml app/src/main/res/mipmap-anydpi/ic_launcher.xml
+          cp app/src/main/res/drawable/ic_launcher.xml app/src/main/res/mipmap-anydpi/ic_launcher_round.xml
           rm -rf archive-parts GlassDialer-project.zip
 
       - name: Generate Gradle wrapper
         run: gradle wrapper --gradle-version 8.13
 
-      - name: Commit expanded Android Studio project
+      - name: Commit expanded Android Studio project (optional)
+        continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
