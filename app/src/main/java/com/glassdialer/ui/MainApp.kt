@@ -90,7 +90,6 @@ fun MainApp(
                     1 -> ContactsPage(contacts, onCall = { placeCall(ctx, it) })
                     else -> RecordingsPage(repo)
                 }
-                }
             }
         }
 
