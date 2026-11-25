@@ -76,6 +76,7 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.READ_CALL_LOG,
             Manifest.permission.READ_CONTACTS,
             Manifest.permission.READ_PHONE_STATE,
+            Manifest.permission.RECORD_AUDIO,
         )
         if (Build.VERSION.SDK_INT >= 33) wanted += Manifest.permission.POST_NOTIFICATIONS
         val missing = wanted.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }

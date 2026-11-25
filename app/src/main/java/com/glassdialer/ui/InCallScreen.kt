@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.glassdialer.data.PhoneRepository
 import com.glassdialer.data.formatDuration
+import com.glassdialer.recording.CallRecorder
 import com.glassdialer.telecom.CallManager
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -195,26 +196,62 @@ private fun SwipeToAnswer(haze: HazeState, onAnswer: () -> Unit, onDecline: () -
 @Composable
 private fun Ongoing(haze: HazeState, name: String?, number: String, state: Int, audio: CallAudioState?) {
     val g = LocalGlass.current
+    val ctx = LocalContext.current
     var keypad by remember { mutableStateOf(false) }
     var dtmf by remember { mutableStateOf("") }
     val muted = audio?.isMuted == true
     val speaker = audio?.route == CallAudioState.ROUTE_SPEAKER
     val held = state == Call.STATE_HOLDING
+    val rec by CallRecorder.status.collectAsState()
+    var autoStarted by remember { mutableStateOf(false) }
+    var level by remember { mutableFloatStateOf(0f) }
+    var silentTicks by remember { mutableIntStateOf(0) }
+
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+    LaunchedEffect(state) {
+        if (state == Call.STATE_ACTIVE && !autoStarted && !rec.recording &&
+            CallRecorder.autoRecord(ctx)
+        ) {
+            autoStarted = true
+            CallRecorder.start(ctx, number)
+        }
+    }
+    LaunchedEffect(rec.recording) {
+        silentTicks = 0
+        while (CallRecorder.status.value.recording) {
+            val amplitude = CallRecorder.amplitude()
+            level = (amplitude / 12000f).coerceIn(0f, 1f)
+            silentTicks = if (amplitude < 200) silentTicks + 1 else 0
+            delay(250)
+        }
+        level = 0f
+    }
+
     val connect = CallManager.call.value?.details?.connectTimeMillis ?: 0L
-    val status = when (state) {
+    val callStatus = when (state) {
         Call.STATE_DIALING, Call.STATE_CONNECTING, Call.STATE_NEW -> "Calling…"
         Call.STATE_HOLDING -> "On hold"
         Call.STATE_ACTIVE -> if (connect > 0) formatDuration((now - connect) / 1000) else "00:00"
         else -> ""
     }
-    val topScale by animateFloatAsState(if (keypad) 0.8f else 1f, spring(dampingRatio = 0.7f), label = "top")
+    val topScale by animateFloatAsState(
+        if (keypad) 0.8f else 1f,
+        spring(dampingRatio = 0.7f),
+        label = "top",
+    )
 
     Column(Modifier.fillMaxSize().systemBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
         Column(
             Modifier.graphicsLayer {
-                scaleX = topScale; scaleY = topScale; translationY = (topScale - 1f) * 300f
+                scaleX = topScale
+                scaleY = topScale
+                translationY = (topScale - 1f) * 300f
             },
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -228,27 +265,80 @@ private fun Ongoing(haze: HazeState, name: String?, number: String, state: Int, 
                 Modifier.glass(haze, Pill, g).padding(horizontal = 14.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                val c = if (held) TagOrange else CallGreen
-                Box(Modifier.size(7.dp).clip(CircleShape).background(c))
+                val color = if (held) TagOrange else CallGreen
+                Box(Modifier.size(7.dp).clip(CircleShape).background(color))
                 Spacer(Modifier.width(6.dp))
-                Text(status, fontSize = 14.sp, color = c)
+                Text(callStatus, fontSize = 14.sp, color = color)
+            }
+
+            AnimatedVisibility(rec.recording) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier.glass(haze, Pill, g).padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.size(8.dp).clip(CircleShape).background(EndRed))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "REC " + formatDuration(((now - rec.startedAt) / 1000).coerceAtLeast(0)),
+                            fontSize = 13.sp,
+                            color = EndRed,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            listOf(0.35f, 0.7f, 1f, 0.6f).forEach { factor ->
+                                Box(
+                                    Modifier.width(3.dp).height((4 + 12 * level * factor).dp)
+                                        .clip(Pill).background(g.text2),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            if (rec.mode == CallRecorder.Mode.CALL_AUDIO) "Call audio" else "Mic",
+                            fontSize = 12.sp,
+                            color = g.text2,
+                        )
+                    }
+                    if (silentTicks > 20) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "No sound detected. Your phone may be blocking call recording.",
+                            fontSize = 12.sp,
+                            color = EndRed,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 32.dp),
+                        )
+                    }
+                }
             }
         }
 
         Spacer(Modifier.weight(1f))
-
         Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp), contentAlignment = Alignment.BottomCenter) {
             OverlayVisibility(
                 !keypad,
                 enter = fadeIn() + scaleIn(initialScale = 0.9f),
                 exit = fadeOut() + scaleOut(targetScale = 0.9f),
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                         Control(Icons.Rounded.MicOff, "Mute", muted) { CallManager.mute(!muted) }
                         Control(Icons.Rounded.VolumeUp, "Speaker", speaker) { CallManager.speaker(!speaker) }
+                        Control(
+                            Icons.Rounded.FiberManualRecord,
+                            if (rec.recording) "Stop rec" else "Record",
+                            rec.recording,
+                        ) {
+                            if (rec.recording) CallRecorder.stop(ctx)
+                            else CallRecorder.start(ctx, number)
+                        }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                         Control(Icons.Rounded.Dialpad, "Keypad", false) { keypad = true }
                         Control(Icons.Rounded.Pause, "Hold", held) { CallManager.hold(!held) }
                     }
@@ -269,14 +359,14 @@ private fun Ongoing(haze: HazeState, name: String?, number: String, state: Int, 
                             Modifier.fillMaxWidth().padding(bottom = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            row.forEach { (d, l) ->
+                            row.forEach { (digit, letters) ->
                                 PillKey(Modifier.weight(1f), height = 50.dp, onClick = {
-                                    dtmf += d
-                                    CallManager.dtmf(d[0])
+                                    dtmf += digit
+                                    CallManager.dtmf(digit[0])
                                 }) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text(d, fontSize = 24.sp, lineHeight = 26.sp)
-                                        Text(l, fontSize = 9.sp, lineHeight = 11.sp, color = g.text2)
+                                        Text(digit, fontSize = 24.sp, lineHeight = 26.sp)
+                                        Text(letters, fontSize = 9.sp, lineHeight = 11.sp, color = g.text2)
                                     }
                                 }
                             }
@@ -293,14 +383,18 @@ private fun Ongoing(haze: HazeState, name: String?, number: String, state: Int, 
                     Box(
                         Modifier.size(52.dp).clip(CircleShape).clickable { keypad = false },
                         contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.Rounded.KeyboardArrowDown, "Hide keypad", tint = g.text2) }
+                    ) {
+                        Icon(Icons.Rounded.KeyboardArrowDown, "Hide keypad", tint = g.text2)
+                    }
                 }
             }
             Spacer(Modifier.width(18.dp))
             Box(
                 Modifier.size(132.dp, 60.dp).clip(Pill).background(EndRed).clickable { CallManager.hangup() },
                 contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Rounded.CallEnd, "End call", Modifier.size(28.dp), tint = Color.White) }
+            ) {
+                Icon(Icons.Rounded.CallEnd, "End call", Modifier.size(28.dp), tint = Color.White)
+            }
             Spacer(Modifier.width(18.dp))
             Spacer(Modifier.size(52.dp))
         }

@@ -82,13 +82,14 @@ fun MainApp(
             AnimatedBlobs()
             Column(Modifier.fillMaxSize().statusBarsPadding()) {
                 if (!isDefault) DefaultBanner(onMakeDefault)
-                if (tab == 0) {
-                    CallsPage(
+                when (tab) {
+                    0 -> CallsPage(
                         calls = calls, contacts = contacts, query = number, sheetOpen = sheetOpen,
                         onSearch = { tab = 1 }, onCall = { placeCall(ctx, it) },
                     )
-                } else {
-                    ContactsPage(contacts, onCall = { placeCall(ctx, it) })
+                    1 -> ContactsPage(contacts, onCall = { placeCall(ctx, it) })
+                    else -> RecordingsPage(repo)
+                })
                 }
             }
         }
@@ -365,6 +366,7 @@ private fun BottomNav(haze: HazeState, tab: Int, modifier: Modifier, onTab: (Int
     ) {
         NavItem(Icons.Rounded.Call, "Calls", tab == 0) { onTab(0) }
         NavItem(Icons.Rounded.People, "Contacts", tab == 1) { onTab(1) }
+        NavItem(Icons.Rounded.Mic, "Recordings", tab == 2) { onTab(2) }
     }
 }
 

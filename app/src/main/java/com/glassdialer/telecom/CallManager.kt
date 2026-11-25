@@ -14,6 +14,7 @@ import android.telecom.CallAudioState
 import android.telecom.InCallService
 import android.telecom.VideoProfile
 import com.glassdialer.InCallActivity
+import com.glassdialer.recording.CallRecorder
 import kotlinx.coroutines.flow.MutableStateFlow
 
 object CallManager {
@@ -50,7 +51,10 @@ object CallManager {
         c.unregisterCallback(callback)
         all -= c
         val next = all.lastOrNull()
-        if (next != null) focus(next) else {
+        if (next != null) {
+            focus(next)
+        } else {
+            service?.let { CallRecorder.stop(it) }
             state.value = Call.STATE_DISCONNECTED
             call.value = null
         }
