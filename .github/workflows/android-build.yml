@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   build:
-    # The unpack step commits the extracted source files. Skip the follow-up bot push.
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -34,44 +33,18 @@ jobs:
       - name: Install Android platform and build tools
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Expand and prepare Android Studio project
+      - name: Reconstruct and expand the Android project archive
         run: |
-          unzip -q GlassDialer-project.zip -d /tmp/glass-dialer
+          mkdir -p /tmp/glass-dialer
+          cat archive-parts/part-*.b64 | tr -d '\r\n' | base64 --decode > /tmp/glass-dialer/source.gz
+          gzip -dc /tmp/glass-dialer/source.gz | gzip -dc | tar -xf - -C /tmp/glass-dialer
           cp -a /tmp/glass-dialer/Glass-Dialer/. .
-          rm GlassDialer-project.zip
-          python3 - <<'PY'
-          from pathlib import Path
+          rm -rf archive-parts GlassDialer-project.zip
 
-          gradle_file = Path("app/build.gradle.kts")
-          source = gradle_file.read_text()
-          old = """    kotlin {
-                  compilerOptions {
-                      jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-                  }
-              }
-          }
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 8.13
 
-          dependencies {"""
-          new = """}
-
-          kotlin {
-              compilerOptions {
-                  jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-              }
-          }
-
-          dependencies {"""
-          if old not in source:
-              raise SystemExit("Could not locate Kotlin compilerOptions block in app/build.gradle.kts")
-          gradle_file.write_text(source.replace(old, new, 1))
-
-          workflow_file = Path(".github/workflows/android-build.yml")
-          workflow_text = workflow_file.read_text()
-          workflow_file.write_text(workflow_text.replace("android-actions/setup-android@v3", "android-actions/setup-android@v4"))
-          PY
-          gradle wrapper --gradle-version 8.13
-
-      - name: Commit expanded project and Gradle wrapper
+      - name: Commit expanded Android Studio project
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
